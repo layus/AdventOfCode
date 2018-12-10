@@ -12,6 +12,8 @@ let
     Unique
     ListZipper
     #modular-arithmetic
+    #hit-graph
+    lens
     parsec3-numbers
     vector-space
     hashmap
