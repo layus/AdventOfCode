@@ -196,8 +196,8 @@ day04parser = filter (not . null . snd) . groupFstWith concat <$> many shift
         stop  = lastNatThen "] wakes up"
         lastNatThen s = last <$> many1 untilNat <* string s <* newline
 
-maximumOn :: (Foldable t, Ord b) => (a -> b) -> t a -> a
-maximumOn = maximumBy . (compare `on`)
+maximumOn :: (Functor t, Foldable t, Ord b) => (a -> b) -> t a -> a
+maximumOn f = snd . maximumBy (compare `on` fst) . adjoinFst f
 
 mostCommon :: Ord a => [a] -> a
 mostCommon = fst . last . count_
@@ -402,19 +402,42 @@ timelapse ps = let fast = minimumOn (snd . snd) ps
 
 -- Day 11
 
-cell serial (x, y) = (rack * y + serial) * rack `div` 100 `mod` 10 - 5 where rack = x + 10
-day11parser = (\serial -> Mat.matrix 300 300 (cell serial)) <$> justNat <* newline
+adjoinFst :: Functor m => (a -> b) -> m a -> m (b, a)
+adjoinFst = fmap . apply
+ where apply f x = let y = f x in y `seq` (y, x)
+-- Or, equivalently
+-- adjoinFst f = fmap (f &&& id)
+-- adjoinFst f = fmap (\a -> (f a, a))
 
-day11 :: Matrix Int -> (Int, Int)
-day11 = snd . maximum . fuel
-  where fuel mat = [ (power pos mat, pos) | pos <- [ (i, j) | i <- [1..298], j <- [1..298] ] ]
-        power (i, j) = sum . Mat.toList . Mat.submatrix i (i+2) j (j+2)
+
+type Pt3 = (Int, Int, Int)
+memoizePt :: (Int, Int) -> (Pt -> Int) -> (Pt -> Int)
+memoizePt (x, y) f = (lookupTable !) where lookupTable = Mat.matrix x y f
+
+day11parser = power . cumsum (301, 301) . cell <$> justNat <* newline
+  where
+    cell serial (x, y) = (rack * y + serial) * rack `div` 100 `mod` 10 - 5 where rack = x + 10
+    cumsum bounds cell = calc
+      where calc = memoizePt bounds calc'
+            calc' (1, _) = 0
+            calc' (_, 1) = 0
+            calc' (i, j) = cell (i-1, j-1) + calc (i-1, j) + calc (i, j-1) - calc (i-1, j-1)
+    power cumsum (i, j, n) = cumsum (i+n, j+n) - cumsum (i+n, j) - cumsum (i, j+n) + cumsum (i, j)
 
 
+day11 :: (Pt3 -> Int) -> Pt
+day11 power = maximumOn power' $ [ (i, j) | i <- [1..298], j <- [1..298] ]
+  where power' (i, j) = power (i, j, 3)
+
+day11bis :: (Pt3 -> Int) -> Pt3
+day11bis power = maximumOn power $ [ (i, j, n) | n <- [1..300], i <- [1..301-n], j <- [1..301-n] ]
+
+{-
 day11bis :: Matrix Int -> (Int, Int, Int)
 day11bis mat = snd $ maximum fuel
   where fuel = [ (s, (i, j, n)) | i <- [1..300], n <- [1..301-i], let (s, j) = maxPow i n ]
         pMat = Mat.fromLists $ scanl' (zipWith (+)) (replicate 300 0) $ Mat.toLists mat
+        pow m (x, y, n) = m ! (x+n, y+n) - m ! (x+n, y) + m ! (x, y+n) - m ! (x, y)
         -- inefficient, as the sum gets calculated every time
         -- power n (i, j) = sum [ pMat ! (i+n, l) - pMat ! (i, l) | l <- [j..j+n-1] ]
         -- nsums :: [Int] -> [Int] -- compute sum of sublists of size n, O(length x)
@@ -422,6 +445,7 @@ day11bis mat = snd $ maximum fuel
         maxPow i n = maximum $ zip (nsums n difflist) [1..]
           where difflist :: [Int]
                 difflist = zipWith subtract (V.toList $ Mat.getRow i pMat) (V.toList $ Mat.getRow (i+n) pMat)
+-}
 
 {-
 day11bis mat = let
