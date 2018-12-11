@@ -13,6 +13,7 @@ let
     ListZipper
     #modular-arithmetic
     #hit-graph
+    matrix
     lens
     parsec3-numbers
     vector-space

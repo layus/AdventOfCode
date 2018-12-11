@@ -14,11 +14,13 @@ import Control.Applicative (liftA2)
 import Control.Arrow ((&&&), (***), first, second, (>>>), Kleisli(..))
 import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.))
 import Data.Either (fromLeft, fromRight)
--- import qualified Data.Vector as V
+import qualified Data.Vector as V
 -- import Data.Vector ( (//), (!), Vector )
 import qualified Data.Set as S
 import Data.Tuple (fst, snd, swap)
 -- import Data.Bits (xor)
+import qualified Data.Matrix as Mat
+import Data.Matrix (Matrix(..), (!))
 import Data.String (unlines)
 import Data.Char (digitToInt, ord, isUpper, isLower, chr)
 -- import Data.HashMap (alter, Map, findWithDefault, empty, elems)
@@ -356,24 +358,28 @@ rules players (!score, !circle, !marble)
 day09 = maximum . (^. _1) . game
 day09bis = day09 . (second (* 100))
 
+
 -- Day 10
 
+-- aligned (((x, y), _):ps) = (length $ filter (\((a, b), _) -> a == x || b == y) ps) > 40
 justInt = skip *> int <* skip 
   where skip = many (noneOf "+-0123456789\n")
 
-day10parser = parseLines $ (\[x, y, dx, dy] -> ((x + 10000 * dx, y + 10000 * dy), (dx, dy))) <$> count 4 justInt
+day10parser = parseLines $ format <$> count 4 justInt
+  where format [x, y, dx, dy] = ((x + 10000 * dx, y + 10000 * dy), (dx, dy))
 
 move ((x, y), (dx, dy)) = ((x + dx, y + dy), (dx, dy))
-aligned (((x, y), _):ps) = (length $ filter (\((a, b), _) -> a == x || b == y) ps) > 40
-aligned' = (< 10) . uncurry subtract . snd . bounds -- Merci Guillaume ;-)
+aligned' = (== 9) . uncurry subtract . snd . bounds -- Merci Guillaume ;-)
 bounds = join (***) (minimum &&& maximum) . unzip . map fst 
 
-showStars ps = '\n' : unlines [[if (x, y) `elem` pos then '▓' else '░' | x <- [minX..maxX] ] | y <- [minY..maxY]]
+showStars ps = unlines $ "":[ [ if (x, y) `elem` pos then '▓' else '░'
+                              | x <- [minX..maxX] ]
+                            | y <- [minY..maxY] ]
   where pos = S.fromList (map fst ps)
         ((minX, maxX), (minY, maxY)) = bounds ps
 
-day10 = showStars . fromJust . find aligned' . iterate (map move)
-day10bis = timelapse -- (10000 +) . length . takeWhile (not . aligned') . iterate (map move)
+day10 = showStars . until aligned' (map move)
+day10bis = (10000 +) . length . takeWhile (not . aligned') . iterate (map move)
 
 
 -- Day 10, direct computation
@@ -396,9 +402,41 @@ timelapse ps = let fast = minimumOn (snd . snd) ps
 
 -- Day 11
 
-day11parser = parseLines int
-day11 = const "Not implemented"
-day11bis = const "Not implemented"
+cell serial (x, y) = (rack * y + serial) * rack `div` 100 `mod` 10 - 5 where rack = x + 10
+day11parser = (\serial -> Mat.matrix 300 300 (cell serial)) <$> justNat <* newline
+
+day11 :: Matrix Int -> (Int, Int)
+day11 = snd . maximum . fuel
+  where fuel mat = [ (power pos mat, pos) | pos <- [ (i, j) | i <- [1..298], j <- [1..298] ] ]
+        power (i, j) = sum . Mat.toList . Mat.submatrix i (i+2) j (j+2)
+
+
+day11bis :: Matrix Int -> (Int, Int, Int)
+day11bis mat = snd $ maximum fuel
+  where fuel = [ (s, (i, j, n)) | i <- [1..300], n <- [1..301-i], let (s, j) = maxPow i n ]
+        pMat = Mat.fromLists $ scanl' (zipWith (+)) (replicate 300 0) $ Mat.toLists mat
+        -- inefficient, as the sum gets calculated every time
+        -- power n (i, j) = sum [ pMat ! (i+n, l) - pMat ! (i, l) | l <- [j..j+n-1] ]
+        -- nsums :: [Int] -> [Int] -- compute sum of sublists of size n, O(length x)
+        nsums n x = drop n $ scanl' (+) 0 $ zipWith subtract (replicate n 0 ++ x) x
+        maxPow i n = maximum $ zip (nsums n difflist) [1..]
+          where difflist :: [Int]
+                difflist = zipWith subtract (V.toList $ Mat.getRow i pMat) (V.toList $ Mat.getRow (i+n) pMat)
+
+{-
+day11bis mat = let
+    rows = Mat.toLists mat
+    prows = scanl' (zipWith (+)) (replicate 300 0) rows
+    iprows = zip prows [1..]
+    rowpairs = [ (zipWith subtract r r', i, (i' - i)) | ((r, i):t) <- tails iprows, (r', i') <- t ]
+    nsums n x = drop n $ scanl' (+) 0 $ zipWith subtract (replicate n 0 ++ x) x
+    maxPow (r, (i, n)) = zip (nsums n r) [1..]
+    ((_, j), (i, j)) = partialBest = maximum . map (maximum . map bestj) rowpairs 
+    in (i, j, n)
+-}
+
+
+    
 
 
 -- Day 12
