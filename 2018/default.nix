@@ -17,6 +17,10 @@ let
     lens
     parsec3-numbers
     vector-space
+    linear
+    # modular-arithmetic
+    numeric-prelude
+    complex-generic
     hashmap
     array
   ]);

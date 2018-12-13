@@ -47,6 +47,9 @@ import Data.Function (on)
 import Control.Exception (catch)
 import System.IO.Error (isDoesNotExistError)
 import Data.Tree
+import System.CPUTime
+import Data.Complex.Generic
+import Data.Foldable (fold)
 
 -- infixl 7 % -- modulus has same precedence as (*) or (/)
 -- (%) = mod
@@ -88,8 +91,15 @@ instance Show a => Display a where
 
 day :: (Display b, Display c) => Int -> Parser a -> (a -> b) -> (a -> c) -> IO ()
 day n parser p p' = flip catch ignore $ do
+    start <- getCPUTime
     input <- getInput (printf "input%02d.txt" n) parser
-    putStrLn $ printf "Day %02d -- %s -- %s" n (display $ p input) (display $ p' input)
+    let res1 = display $ p input
+    mid <- res1 `seq` getCPUTime
+    let res2 = display $ p' input
+    stop <- res2 `seq` getCPUTime 
+    let diff1 = (fromIntegral (mid - start)) / (10^12) :: Double
+    let diff2 = (fromIntegral (stop - mid)) / (10^12) :: Double
+    putStrLn $ printf "Day %02d -- %s (%.3f s) -- %s (%.3f s)" n res1 diff1 res2 diff2
   where ignore e | isDoesNotExistError e = return () 
                  | otherwise = putStrLn $ show e
 
@@ -334,6 +344,7 @@ day08 = fst
 day08bis = snd
 -}
 
+
 -- Day 09
 
 justNat = untilNat <* many (noneOf "0123456789\n")
@@ -382,32 +393,10 @@ day10 = showStars . until aligned' (map move)
 day10bis = (10000 +) . length . takeWhile (not . aligned') . iterate (map move)
 
 
--- Day 10, direct computation
-
-{-
-minimumOn :: (Foldable t, Ord b) => (a -> b) -> t a -> a
-minimumOn = minimumBy . (compare `on`)
-
-calc ( ((a, b), (da, db)): ((x, y), (dx, dy)): _) 
-    | db /= dy = Just $ (liftA2 min id swap) ((y - b - 10) `div` (dy - db), (b - y - 10) `div` (db - dy))
-    | otherwise = Nothing
-calc _ = Nothing
-span = show . foldl' (\(x, y) (a, b) -> (max x a, min y b)) (-50000, 50000) . mapMaybe calc . tails
--- #> (-241, -240) => (-10241, -10240)
-timelapse ps = let fast = minimumOn (snd . snd) ps
-                   slow = maximumOn (fst . snd) ps
-               in calc [fast, slow] 
--}
-
-
 -- Day 11
 
 adjoinFst :: Functor m => (a -> b) -> m a -> m (b, a)
-adjoinFst = fmap . apply
- where apply f x = let y = f x in y `seq` (y, x)
--- Or, equivalently
--- adjoinFst f = fmap (f &&& id)
--- adjoinFst f = fmap (\a -> (f a, a))
+adjoinFst = fmap . (\f x -> let y = f x in y `seq` (y, x))
 
 
 type Pt3 = (Int, Int, Int)
@@ -426,55 +415,96 @@ day11parser = power . cumsum (301, 301) . cell <$> justNat <* newline
 
 
 day11 :: (Pt3 -> Int) -> Pt
-day11 power = maximumOn power' $ [ (i, j) | i <- [1..298], j <- [1..298] ]
-  where power' (i, j) = power (i, j, 3)
+day11 power = maximumOn (power . uncurry (,,3)) $ [ (i, j) | i <- [1..298], j <- [1..298] ]
 
 day11bis :: (Pt3 -> Int) -> Pt3
 day11bis power = maximumOn power $ [ (i, j, n) | n <- [1..300], i <- [1..301-n], j <- [1..301-n] ]
 
-{-
-day11bis :: Matrix Int -> (Int, Int, Int)
-day11bis mat = snd $ maximum fuel
-  where fuel = [ (s, (i, j, n)) | i <- [1..300], n <- [1..301-i], let (s, j) = maxPow i n ]
-        pMat = Mat.fromLists $ scanl' (zipWith (+)) (replicate 300 0) $ Mat.toLists mat
-        pow m (x, y, n) = m ! (x+n, y+n) - m ! (x+n, y) + m ! (x, y+n) - m ! (x, y)
-        -- inefficient, as the sum gets calculated every time
-        -- power n (i, j) = sum [ pMat ! (i+n, l) - pMat ! (i, l) | l <- [j..j+n-1] ]
-        -- nsums :: [Int] -> [Int] -- compute sum of sublists of size n, O(length x)
-        nsums n x = drop n $ scanl' (+) 0 $ zipWith subtract (replicate n 0 ++ x) x
-        maxPow i n = maximum $ zip (nsums n difflist) [1..]
-          where difflist :: [Int]
-                difflist = zipWith subtract (V.toList $ Mat.getRow i pMat) (V.toList $ Mat.getRow (i+n) pMat)
--}
-
-{-
-day11bis mat = let
-    rows = Mat.toLists mat
-    prows = scanl' (zipWith (+)) (replicate 300 0) rows
-    iprows = zip prows [1..]
-    rowpairs = [ (zipWith subtract r r', i, (i' - i)) | ((r, i):t) <- tails iprows, (r', i') <- t ]
-    nsums n x = drop n $ scanl' (+) 0 $ zipWith subtract (replicate n 0 ++ x) x
-    maxPow (r, (i, n)) = zip (nsums n r) [1..]
-    ((_, j), (i, j)) = partialBest = maximum . map (maximum . map bestj) rowpairs 
-    in (i, j, n)
--}
-
-
-    
-
 
 -- Day 12
 
-day12parser = parseLines int
-day12 = const "Not implemented"
-day12bis = const "Not implemented"
+windows :: Int -> [a] -> [[a]]
+windows n l@(_:t) = if length win < n then [] else win:(windows n t)
+  where win = take n l
+
+day12parser :: Parser (Int -> Int)
+day12parser = potsGame <$> state <*> rules
+  where state = string "initial state: " *> plants <* many newline
+        rules = (M.!) . M.fromList <$> parseLines ((,) <$> plants <* string " => " <*> plant)
+        plant = oneOf "#."
+        plants = many1 plant
+
+potsGame :: String -> (String -> Char) -> Int -> Int
+potsGame init rules = evalPots . game 0 init
+  where 
+    evalPots (offset, pots) = sum . map (+offset) . findIndices (== '#') $ pots
+    normalize pots = let (stem, pots') = span (== '.') pots 
+                     in (length stem - 2, dropWhileEnd (== '.') pots')
+    patterns = windows 5 . ("...." ++) . (++ "....")
+    game offset pots steps
+        | steps == 0    = (offset,                       pots)
+        | pots == pots' = (offset + extraOffset * steps, pots)
+        | otherwise     = game (offset + extraOffset) pots' (steps - 1)
+        where (extraOffset, pots') = normalize . map rules . patterns $ pots
+
+day12 :: (Int -> Int) -> Int
+day12 = ($ 20)
+
+day12bis :: (Int -> Int) -> Int
+day12bis = ($ 50000000000) 
 
 
 -- Day 13
 
-day13parser = parseLines int
-day13 = const "Not implemented"
-day13bis = const "Not implemented"
+data Train = Train { position :: Complex Int, direction :: Complex Int, choice :: Int}
+    deriving (Show)
+
+instance Ord (Complex Int) where
+    compare (a :+ b) (x :+ y) = compare (a, b) (x, y)
+
+instance Ord Train where
+    compare = compare `on` position
+
+instance Eq Train where
+    (==) = (==) `on` position
+
+day13parser :: Parser (Complex Int -> Char, [Train])
+day13parser = (tracks &&& trains) . Mat.fromLists <$> parseLines (many $ noneOf "\n")
+  where 
+    dir = (M.!) . M.fromList $ zip "><^v" [1:+0, (-1):+0, 0:+(-1), 0:+1]
+    tracks = (\m (y:+x) -> m Mat.! (x+1, y+1))
+    trains = fold . Mat.mapPos (\(y, x) v -> if v `elem` "><^v" then [ Train ((x-1):+(y-1)) (dir v) 0 ] else [])
+
+runTrains (tracks, trains) = collide [] trains
+  where
+    collide :: [Train] -> [Train] -> [Train]
+    collide [] []    = []
+    collide [] [t]    = [t]
+    collide [] ts     = collide (sort ts) []
+    collide (t:ts) ms = case o of
+        Just o' -> t':o':collide ts' ms'
+        Nothing -> collide ts (t':ms)
+      where 
+        t' = moveTrain t
+        o = find (== t') $ ts ++ ms
+        ts' = filter (/= t') ts
+        ms' = filter (/= t') ms
+
+    moveTrain :: Train -> Train
+    moveTrain (Train pos v c) = case (tracks pos', v) of
+        ('+' , _   ) -> Train pos' (v * rot c) ((c+1) `mod` 3)
+        ('\\', 0:+_) -> Train pos' (v * left) c
+        ('\\', _   ) -> Train pos' (v * right) c
+        ('/' , 0:+_) -> Train pos' (v * right) c
+        ('/' , _   ) -> Train pos' (v * left) c
+        _            -> Train pos' v c
+      where pos' = pos + v
+            rot c = [left, (1 :+ 0), right] !! c
+            left = 0 :+ (-1)
+            right = 0 :+ 1
+
+day13 = (\(x:+y) -> (x, y)) . position . head . runTrains
+day13bis = (\(x:+y) -> (x, y)) . position . last . runTrains
 
 
 -- Day 14
