@@ -1,6 +1,7 @@
 let 
   haskellPackageOverrides = self: super: {
-    #Glob = self.callPackage ./Glob-0.7.14.nix {};
+    # Glob = self.callPackage ./Glob-0.7.14.nix {};
+    modular-arithmetic = pkgs.haskell.lib.dontCheck super.modular-arithmetic ;
   };
 
   nixpkgs =  import <nixpkgs> { config = {inherit haskellPackageOverrides; }; };
@@ -18,11 +19,12 @@ let
     parsec3-numbers
     vector-space
     linear
-    # modular-arithmetic
+    modular-arithmetic
     numeric-prelude
     complex-generic
     hashmap
     array
+    mtl
   ]);
 
 in stdenv.mkDerivation {

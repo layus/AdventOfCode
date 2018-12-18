@@ -8,17 +8,20 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ExplicitNamespaces #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE LambdaCase #-}
 
-import Control.Monad (liftM2, liftM3, msum, join)
+import Control.Monad (liftM, liftM2, liftM3, msum, join)
 import Control.Applicative (liftA2)
 import Control.Arrow ((&&&), (***), first, second, (>>>), Kleisli(..))
-import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.))
+import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~))
 import Data.Either (fromLeft, fromRight)
 import qualified Data.Vector as V
 -- import Data.Vector ( (//), (!), Vector )
 import qualified Data.Set as S
 import Data.Tuple (fst, snd, swap)
--- import Data.Bits (xor)
 import qualified Data.Matrix as Mat
 import Data.Matrix (Matrix(..), (!))
 import Data.String (unlines)
@@ -35,7 +38,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.IntMap.Strict as IM
 import Data.Maybe
 import Data.Monoid (Sum, getSum)
-import Debug.Trace (traceShowId, traceShow)
+import Debug.Trace (traceShowId, traceShow, traceM, trace)
 import Text.Parsec ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
                    , char, string, noneOf, oneOf, lower, upper, letter -- chars 
                    , try, newline, eof, parse, anyToken, optional)
@@ -46,10 +49,17 @@ import Text.Parsec.Number (int, nat)
 import Data.Function (on)
 import Control.Exception (catch)
 import System.IO.Error (isDoesNotExistError)
-import Data.Tree
+import Data.Tree (Tree(..), foldTree)
 import System.CPUTime
 import Data.Complex.Generic
 import Data.Foldable (fold)
+import Data.Modular (type (/)(), ℤ, unMod)
+import Data.Bits ((.|.), (.&.))
+-- import Data.Bits (xor)
+import Data.Bool (bool)
+import Control.Monad.State.Strict
+import Control.Monad.Cont
+import Control.Monad.Reader
 
 -- infixl 7 % -- modulus has same precedence as (*) or (/)
 -- (%) = mod
@@ -456,7 +466,7 @@ day12bis = ($ 50000000000)
 
 -- Day 13
 
-data Train = Train { position :: Complex Int, direction :: Complex Int, choice :: Int}
+data Train = Train { position :: Complex Int, direction :: Complex Int, choice :: ℤ / 3}
     deriving (Show)
 
 instance Ord (Complex Int) where
@@ -492,14 +502,14 @@ runTrains (tracks, trains) = collide [] trains
 
     moveTrain :: Train -> Train
     moveTrain (Train pos v c) = case (tracks pos', v) of
-        ('+' , _   ) -> Train pos' (v * rot c) ((c+1) `mod` 3)
+        ('+' , _   ) -> Train pos' (v * rot c) (c+1)
         ('\\', 0:+_) -> Train pos' (v * left) c
         ('\\', _   ) -> Train pos' (v * right) c
         ('/' , 0:+_) -> Train pos' (v * right) c
         ('/' , _   ) -> Train pos' (v * left) c
         _            -> Train pos' v c
       where pos' = pos + v
-            rot c = [left, (1 :+ 0), right] !! c
+            rot c = genericIndex [left, (1 :+ 0), right] c
             left = 0 :+ (-1)
             right = 0 :+ 1
 
@@ -509,7 +519,7 @@ day13bis = (\(x:+y) -> (x, y)) . position . last . runTrains
 
 -- Day 14
 
-day14parser = parseLines int
+day14parser = int <* newline
 day14 = const "Not implemented"
 day14bis = const "Not implemented"
 
@@ -523,23 +533,237 @@ day15bis = const "Not implemented"
 
 -- Day 16
 
-day16parser = parseLines int
-day16 = const "Not implemented"
-day16bis = const "Not implemented"
+type Registers = [Int]
+data Instr = Instr { opcode :: Int, a :: Int, b :: Int, to :: Int } deriving (Eq)
+
+instance Show Instr where
+    show (Instr o a b c) = printf "%d %d %d %d" o a b c
+
+data Op = Addr | Addi
+        | Mulr | Muli
+        | Banr | Bani
+        | Borr | Bori
+        | Setr | Seti
+        | Gtir | Gtri | Gtrr
+        | Eqir | Eqri | Eqrr
+  deriving (Ord, Eq, Show, Bounded, Enum)
+
+apply :: Op -> Instr -> Registers -> Registers
+apply o (Instr _ a b to) input = input & ix to .~ case o of
+    Addr -> reg (+)
+    Addi -> imm (+)
+    Mulr -> reg (*)
+    Muli -> imm (*)
+    Banr -> reg (.&.)
+    Bani -> imm (.&.)
+    Borr -> reg (.|.)
+    Bori -> imm (.|.)
+    Setr -> imm (const) -- !
+    Seti -> inv (const) -- !
+    Gtri -> imm ((boolint .) . (>))
+    Gtir -> inv ((boolint .) . (>))
+    Gtrr -> reg ((boolint .) . (>))
+    Eqri -> imm ((boolint .) . (==))
+    Eqir -> inv ((boolint .) . (==))
+    Eqrr -> reg ((boolint .) . (==))
+  where
+    reg op = (input !! a) `op` (input !! b)
+    imm op = (input !! a) `op` (         b)
+    inv op = (         a) `op` (input !! b)
+    boolint = bool 0 1 
+
+data Test = Test { input :: Registers, instr :: Instr, result :: Registers } deriving (Eq)
+instance Show Test where
+    show (Test i d o) = printf "\n%s\n%s\n%s\n" (show i) (show d) (show o)
+
+day16parser = (,) <$> tests <* newline <* newline <*> program
+  where tests = many (try test)
+        test = Test <$> four <*> (toInstr <$> four) <*> four <* newline
+        program = many (toInstr <$> four)
+        toInstr [a, b, c, d] = Instr a b c d
+        four = count 4 justInt <* newline
+
+check (Test inp ins out) op = out == apply op ins inp
+choices = [Addr ..]
+
+day16 :: ([Test], [Instr]) -> Int
+day16 = length . filter ambiguous . fst
+  where ambiguous test = (>= 3) . length . filter (check test) $ choices
+
+day16bis (tests, prgm) = head $ foldl ops [0, 0, 0, 0] prgm
+  where
+    finalOps = M.map (\[a] -> a) $ (!! 16) $ iterate filterUniques $ M.fromListWith intersect $ map valid tests
+    valid test = (opcode . instr $ test, filter (check test) choices)
+    ops reg instr = apply (finalOps M.! opcode instr) instr reg
+    filterUniques options = M.map (\v -> case v of [_] -> v; _ -> v \\ uniques) options
+      where uniques = concat . filter ((== 1) . length) . snd . unzip $ M.toList options
+
 
 
 -- Day 17
 
-day17parser = parseLines int
-day17 = const "Not implemented"
-day17bis = const "Not implemented"
+-- flow' :: Grid -> Grid
+-- flow' grid = snd $ runState (runContT (fill (500, minY-1)) return) grid -- runCont (runStateT (fill (500, minY-1)) grid) id
+--   where 
+--     ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
+-- 
+--     set :: Pt -> Char -> Flow ()
+--     set pos c = modify (M.insert pos c)
+-- 
+--     left, right, down :: Dir
+--     left = first (subtract 1)
+--     right = first (+1)
+--     down = second (+1)
+-- 
+--     test :: Pt -> Flow Bool
+--     test (x, y) = do
+--         traceM . show $ (x, y)
+--         if y > maxY || x > maxX+10 || x < minX-10
+--         then return False
+--         else do 
+--             grid <- get
+--             --traceM "test"
+--             --traceM (showRocks grid)
+--             case M.lookup (x, y) grid of
+--                  Just '#' -> return True 
+--                  Just '~' -> return True
+--                  Just '|' -> return False
+--                  _ -> action
+-- 
+--     fill :: Pt -> Flow Bool
+--     fill pt = do
+--         let pos = move down pt
+--         test pos $ do
+--             set pos '|'
+--             fullDown <- fill pos
+--             if not fullDown 
+--             then return False
+--             else do
+--                 fullLeft <- check left pos
+--                 fullRight <- check right pos
+--                 if not (fullLeft && fullRight)
+--                 then return False
+--                 else do
+--                     set pos '~'
+--                     still left pos
+--                     still right pos
+--                     return True
+-- 
+--     move :: Dir -> (Pt -> a) -> Pt -> a
+--     move dir f = f . dir
+-- 
+-- 
+--     still dir = move dir $ \pos -> do
+--         stop <- test pos (return False)
+--         unless stop $ do
+--             set pos '~'
+--             still dir pos
+-- 
+--     check dir = move dir $ \pos -> do
+--         test pos $ do
+--             set pos '|'
+--             fullDown <- fill pos
+--             if not fullDown
+--             then return False
+--             else check dir pos
+
+-- | Binary operators to chain monads on Booleans
+-- | These operators are fail-fast, and 
+infixl 1 <&&>, ||>, &&>
+
+(&&>), (||>), (<&&>) :: (Monad m) => m Bool -> m Bool -> m Bool
+a  &&> b = a >>= bool (return False) b
+a  ||> b = a >>= bool b (return True)
+a <&&> b = liftM2 (&&) a b
+
+type Grid = M.Map Pt Char
+
+day17parser :: Parser Grid
+day17parser = flow . M.fromList . map (,'#') . concat <$> parseLines line
+  where 
+    line = do 
+        axis <- char 'x' <|> char 'y'
+        [a, b, c] <- count 3 justNat
+        let coord = if axis == 'x' then (a,) else (,a)
+        return $ map coord (enumFromTo b c)
+
+showRocks :: Grid -> String
+showRocks grid = unlines [ [ M.findWithDefault ' ' (x, y) grid 
+                           | x <- [minX .. maxX] ] 
+                         | y <- [minY .. maxY] ]
+  where ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
+
+
+type Flow = ReaderT Pt (State Grid) Bool
+type Dir = Pt -> Pt
+
+flow :: Grid -> Grid
+flow grid = flip execState grid . flip runReaderT (500, minY-1) $ fill
+  where 
+    ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
+    (left, right, down) = (first (subtract 1), first (+1), second (+1))
+
+    -- | Performs a given action when the cell is empty
+    -- | or a conforming boolean if it is not.
+    onFree action = ask >>= test'
+      where test' (x, y)
+                                                      -- border never overflows
+              | y > maxY || x > maxX+10 || x < minX-10 = return False
+              | otherwise = M.lookup (x, y) <$> get >>= \case
+                       Just '|' -> return False -- no overflow
+                       Just _   -> return True  -- overflow ('~', '#')
+                       Nothing  -> action
+
+    set c = ask >>= \pos -> modify (M.insert pos c)
+    go dir = local dir . onFree
+
+    fill = go down $ 
+            set '|' >> fill
+            &&> (check left <&&> check right)
+            &&> (still left >> still right)
+    still dir = set '~' >> go dir (return True) ||> local dir (still dir)
+    check dir = go dir $ set '|' >> fill &&> check dir
+
+
+day17 = length . filter (/= '#') . M.elems
+day17bis = length . filter (== '~') . M.elems
 
 
 -- Day 18
 
-day18parser = parseLines int
-day18 = const "Not implemented"
-day18bis = const "Not implemented"
+type Forest = Matrix Char
+
+day18parser :: Parser Forest
+day18parser = Mat.fromLists <$> parseLines (many $ oneOf "#|.")
+
+countEach :: [Char] -> [Int]
+countEach = (\m -> map (\c -> M.findWithDefault 0 c m) "|#") . M.fromList . count_
+
+collectWood :: Forest -> Forest
+collectWood forest = Mat.mapPos (magic . context) forest
+  where
+    magic [t, l] '.' = bool '.' '|' (t >= 3)
+    magic [t, l] '|' = bool '|' '#' (l >= 3)
+    magic [t, l] '#' = bool '#' '.' (l < 1 || t < 1)
+    (nrows, ncols) = (Mat.nrows &&& Mat.ncols) forest
+    context (x, y) = countEach [ forest Mat.! (x', y') 
+                               | x' <- [max 1 (x-1) .. min ncols (x+1)],
+                                 y' <- [max 1 (y-1) .. min nrows (y+1)],
+                                 (x, y) /= (x', y')]
+
+-- Make Forest usable for Map keys
+instance Ord Forest where compare = compare `on` Mat.toLists
+
+fixLoop :: Ord a => (a -> a) -> Int -> a -> a
+fixLoop f = fixLoop' M.empty where 
+  fixLoop' visited i s = if i == 0 then s else case M.lookup s visited of
+    Just i' -> head $ M.keys $ M.filter (== i' - (i `mod` (i'-i))) visited
+    Nothing -> fixLoop' (M.insert s i visited) (i-1) (f s)
+
+showForest = unlines . Mat.toLists
+evalForest = (\[t, l] -> l * t) . countEach . Mat.toList 
+day18 = evalForest . fixLoop collectWood 10
+day18bis = evalForest . fixLoop collectWood 1000000000
 
 
 -- Day 19
