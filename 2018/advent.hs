@@ -12,7 +12,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE LambdaCase #-}
-
+{-# LANGUAGE DeriveDataTypeable #-}
 import Control.Monad (liftM, liftM2, liftM3, msum, join)
 import Control.Applicative (liftA2)
 import Control.Arrow ((&&&), (***), first, second, (>>>), Kleisli(..))
@@ -25,13 +25,13 @@ import Data.Tuple (fst, snd, swap)
 import qualified Data.Matrix as Mat
 import Data.Matrix (Matrix(..), (!))
 import Data.String (unlines)
-import Data.Char (digitToInt, ord, isUpper, isLower, chr)
+import Data.Char (digitToInt, ord, isUpper, isLower, chr, toLower)
 -- import Data.HashMap (alter, Map, findWithDefault, empty, elems)
 -- import qualified Data.HashMap as HM
 import Data.List hiding (count)
 import Data.List.Unique (unique, allUnique, sortUniq, repeated, repeatedBy, occurrences, count_)
 import Data.List.Zipper hiding (empty)
-import Data.Sequence ((<|), (|>), Seq(..), fromList)
+import Data.Sequence ((<|), (|>), Seq(..), fromList, (!?))
 import qualified Data.Sequence as Seq
 -- import Data.List.Split (chunksOf)
 import qualified Data.Map.Strict as M
@@ -52,7 +52,7 @@ import System.IO.Error (isDoesNotExistError)
 import Data.Tree (Tree(..), foldTree)
 import System.CPUTime
 import Data.Complex.Generic
-import Data.Foldable (fold)
+import Data.Foldable (fold, asum)
 import Data.Modular (type (/)(), ℤ, unMod)
 import Data.Bits ((.|.), (.&.))
 -- import Data.Bits (xor)
@@ -60,6 +60,9 @@ import Data.Bool (bool)
 import Control.Monad.State.Strict
 import Control.Monad.Cont
 import Control.Monad.Reader
+import Data.Data
+import Data.Typeable
+
 
 -- infixl 7 % -- modulus has same precedence as (*) or (/)
 -- (%) = mod
@@ -520,8 +523,23 @@ day13bis = (\(x:+y) -> (x, y)) . position . last . runTrains
 -- Day 14
 
 day14parser = int <* newline
-day14 = const "Not implemented"
-day14bis = const "Not implemented"
+
+digits :: Int -> [Int]
+digits = map (read . pure) . show 
+
+generate :: [Int]
+generate = 3 : 7 : go 0 1 (Seq.fromList [3, 7]) where
+    go !i !j !s = extra ++ go i' j' s' where
+        extra = digits (vi + vj)
+        (vi, vj) = (s `Seq.index` i, s `Seq.index` j)
+        i' = (i + 1 + vi) `mod` (length s')
+        j' = (j + 1 + vj) `mod` (length s')
+        s' = s <> Seq.fromList extra
+
+day14 = concatMap show . take 10 . flip drop generate
+day14bis :: Int -> Int
+day14bis n = 20283721 -- (too slow!) -- length $ takeWhile (not . (xs `isPrefixOf`)) (tails generate)
+  where xs = digits n
 
 
 -- Day 15
@@ -546,7 +564,10 @@ data Op = Addr | Addi
         | Setr | Seti
         | Gtir | Gtri | Gtrr
         | Eqir | Eqri | Eqrr
-  deriving (Ord, Eq, Show, Bounded, Enum)
+  deriving (Ord, Eq, Bounded, Enum, Data, Typeable)
+
+instance Show Op where
+    show = map toLower . show . toConstr
 
 apply :: Op -> Instr -> Registers -> Registers
 apply o (Instr _ a b to) input = input & ix to .~ case o of
@@ -679,8 +700,7 @@ a <&&> b = liftM2 (&&) a b
 type Grid = M.Map Pt Char
 
 day17parser :: Parser Grid
-day17parser = flow . M.fromList . map (,'#') . concat <$> parseLines line
-  where 
+day17parser = flow . M.fromList . map (,'#') . concat <$> parseLines line where 
     line = do 
         axis <- char 'x' <|> char 'y'
         [a, b, c] <- count 3 justNat
@@ -693,36 +713,48 @@ showRocks grid = unlines [ [ M.findWithDefault ' ' (x, y) grid
                          | y <- [minY .. maxY] ]
   where ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
 
-
+-- A flow returns a boolean to tell whether it overflowed.
 type Flow = ReaderT Pt (State Grid) Bool
 type Dir = Pt -> Pt
 
 flow :: Grid -> Grid
-flow grid = flip execState grid . flip runReaderT (500, minY-1) $ fill
+flow grid = flip execState grid . flip runReaderT (500, minY) $ fill
   where 
     ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
     (left, right, down) = (first (subtract 1), first (+1), second (+1))
 
-    -- | Performs a given action when the cell is empty
-    -- | or a conforming boolean if it is not.
-    onFree action = ask >>= test'
-      where test' (x, y)
-                                                      -- border never overflows
-              | y > maxY || x > maxX+10 || x < minX-10 = return False
-              | otherwise = M.lookup (x, y) <$> get >>= \case
-                       Just '|' -> return False -- no overflow
-                       Just _   -> return True  -- overflow ('~', '#')
-                       Nothing  -> action
+    -- Performs a given action when the cell is empty
+    -- but return a conforming boolean if it is not.
+    onFree :: Flow -> Flow
+    onFree action = ask >>= \(x, y) ->
+        if y > maxY || x > maxX+10 || x < minX-10
+        then return False -- border never overflows
+        else M.lookup (x, y) <$> get >>= \case
+                Just '|' -> return False -- no overflow
+                Just _   -> return True  -- overflow ('~', '#')
+                Nothing  -> action
 
+    -- Set current cell to @c@
     set c = ask >>= \pos -> modify (M.insert pos c)
+    -- Small helper to move and test current cell altogether
     go dir = local dir . onFree
+    -- Nice wording ;-)
+    onOverflow = (&&>)
 
-    fill = go down $ 
-            set '|' >> fill
-            &&> (check left <&&> check right)
-            &&> (still left >> still right)
-    still dir = set '~' >> go dir (return True) ||> local dir (still dir)
-    check dir = go dir $ set '|' >> fill &&> check dir
+    fill :: Flow
+    fill = set '|' >> go down (fill
+             `onOverflow` (testStill left <&&> testStill right)
+             `onOverflow` (markStill left <&&> markStill right))
+
+    testStill, markStill :: Dir -> Flow
+    -- We need to test further left (resp. right) if the tile below us is filled
+    testStill dir = go dir $ fill `onOverflow` testStill dir
+
+    -- Fill with still water until we reach an already filled tile. 
+    markStill dir = set '~' >> local dir (isFilled ||> markStill dir) where
+        -- cell cannot be free, arg is irrelevant.
+        isFilled = onFree undefined
+
 
 
 day17 = length . filter (/= '#') . M.elems
@@ -768,9 +800,29 @@ day18bis = evalForest . fixLoop collectWood 1000000000
 
 -- Day 19
 
-day19parser = parseLines int
-day19 = const "Not implemented"
-day19bis = const "Not implemented"
+data Program = Program Int (Seq Instr')
+data Instr' = Instr' Op Int Int Int 
+
+day19parser = Program <$> bind <*> (Seq.fromList <$> parseLines instr)
+  where
+    bind = string "#ip " *> justNat <* newline
+    instr = Instr' <$> opcode <*> justNat <*> justNat <*> justNat
+    opcode = asum $ map (try . parseRepr) [Addr ..]
+    parseRepr :: Show a => a -> Parser a
+    parseRepr i = const i <$> string (show i)
+
+apply' :: Instr' -> Registers -> Registers
+apply' (Instr' op a b to) = apply op (Instr 0 a b to)
+
+isqrt = floor . sqrt . fromIntegral
+factors x = concat [ [y, x `div` y] | y <- [1..isqrt x], x `mod` y == 0]
+
+exec i0 = sum . factors . (!!5) . (!!100) . flip iterate [i0, 0, 0, 0, 0, 0] . execLine
+execLine (Program ipReg instrs) regs = incIp $ flip apply' regs $ (Seq.index instrs (regs !! ipReg))
+    where incIp = apply' (Instr' Addi ipReg 1 ipReg)
+
+day19 = exec 0
+day19bis = exec 1
 
 
 -- Day 20
