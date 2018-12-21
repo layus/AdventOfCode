@@ -13,11 +13,14 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE NamedFieldPuns #-}
+
 import Control.Monad (liftM, liftM2, liftM3, msum, join)
 import Control.Applicative (liftA2)
 import Control.Arrow ((&&&), (***), first, second, (>>>), Kleisli(..))
-import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~))
-import Data.Either (fromLeft, fromRight)
+import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~), runIdentity)
+import Data.Either (fromLeft, fromRight, partitionEithers)
 import qualified Data.Vector as V
 -- import Data.Vector ( (//), (!), Vector )
 import qualified Data.Set as S
@@ -41,11 +44,14 @@ import Data.Monoid (Sum, getSum)
 import Debug.Trace (traceShowId, traceShow, traceM, trace)
 import Text.Parsec ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
                    , char, string, noneOf, oneOf, lower, upper, letter -- chars 
-                   , try, newline, eof, parse, anyToken, optional)
+                   , try, newline, eof, parse, anyToken, optional -- misc
+                   , getPosition
+                   )
+import Text.Parsec.Pos (sourceLine, sourceColumn)
 import Text.Parsec.String (Parser, parseFromFile)
+import Text.Parsec.Number (int, nat)
 import qualified Text.Parsec.Error
 import Text.Printf (printf)
-import Text.Parsec.Number (int, nat)
 import Data.Function (on)
 import Control.Exception (catch)
 import System.IO.Error (isDoesNotExistError)
@@ -528,10 +534,13 @@ digits :: Int -> [Int]
 digits = map (read . pure) . show 
 
 generate :: [Int]
-generate = 3 : 7 : go 0 1 (Seq.fromList [3, 7]) where
-    go !i !j !s = extra ++ go i' j' s' where
+generate = 3 : 7 : go 0 1 (Seq.fromList [3, 7])
+  where
+    go !i !j !s = extra ++ go i' j' s'
+      where
         extra = digits (vi + vj)
-        (vi, vj) = (s `Seq.index` i, s `Seq.index` j)
+        vi = s `Seq.index` i
+        vj = s `Seq.index` j
         i' = (i + 1 + vi) `mod` (length s')
         j' = (j + 1 + vj) `mod` (length s')
         s' = s <> Seq.fromList extra
@@ -544,9 +553,79 @@ day14bis n = 20283721 -- (too slow!) -- length $ takeWhile (not . (xs `isPrefixO
 
 -- Day 15
 
-day15parser = parseLines int
-day15 = const "Not implemented"
-day15bis = const "Not implemented"
+-- Heavily inspired / copied from 'https://github.com/ephemient/aoc2018/blob/master/src/Day15.hs'
+
+data Cave = Cave {walls :: S.Set Pt, units :: M.Map Pt Unit} deriving (Show)
+data Species = Goblin | Elf deriving (Show, Ord, Eq)
+data Unit = Unit { species :: Species, hp :: Int } deriving (Show)
+
+day15parser :: Parser Cave
+day15parser = uncurry Cave . (S.fromDistinctAscList *** M.fromDistinctAscList) . partitionEithers <$> many element
+  where element = do
+            -- index by (y, x) to get correct order.
+            pos <- (sourceLine &&& sourceColumn) <$> getPosition
+            c <- oneOf "#EG." <* many (oneOf ".\n")
+            return $ case c of
+                          '#' -> Left pos
+                          'E' -> Right (pos, Unit Elf 200)
+                          'G' -> Right (pos, Unit Goblin 200)
+
+adjacencies :: Pt -> S.Set Pt
+adjacencies (y, x) = S.fromDistinctAscList [(y - 1, x), (y, x - 1), (y, x + 1), (y + 1, x)]
+
+nearest :: S.Set Pt -> S.Set Pt -> Pt -> Maybe Pt
+nearest walls goals = go walls . S.singleton
+  where
+    go visited q 
+        | S.null q = Nothing
+        | reached <- S.intersection goals q, not $ S.null reached = S.lookupMin reached
+        | otherwise = go visited' $ S.unions (adjacencies <$> S.toList q) S.\\ visited'
+        where visited' = S.union visited q
+
+step :: Int -> S.Set Pt -> M.Map Pt Unit -> (M.Map Pt Unit, Bool)
+step force walls = go M.empty
+  where
+    go past (M.minViewWithKey -> Just ((pos, unit), future))
+        | M.null enemies = (M.insert pos unit allOtherUnits, False)
+        | otherwise = case M.restrictKeys enemies $ adjacencies pos' of
+            (sortOn (hp . snd) . M.toList -> (target, _):_) -> let
+                past' = M.insert pos' unit $ M.alter attack target past 
+                future' = M.alter attack target future
+              in go past' future'
+            _ -> go (M.insert pos' unit past) future
+        where 
+            allOtherUnits = M.union past future
+            walls' = S.union walls $ M.keysSet allOtherUnits
+            enemies = M.filter (on (/=) species $ unit) allOtherUnits
+            adjacentEnemies = adjacencies pos `S.intersection` M.keysSet enemies
+            enemyRanges = S.unions (adjacencies <$> M.keys enemies) S.\\ walls'
+            pos' = case if S.null adjacentEnemies then nearest walls' enemyRanges pos else Nothing of
+                        Just goal | Just move <- nearest walls' (adjacencies pos) goal -> move
+                        _ -> pos
+    go past _ = (past, True)
+
+    attack (Just unit@Unit {species = Elf, hp})
+        | hp > 3 = Just unit {hp = hp - 3}
+    attack (Just unit@Unit {species = Goblin, hp})
+        | hp > force = Just unit {hp = hp - force}
+    attack _ = Nothing
+
+outcome :: Cave -> (Int, Int)
+outcome Cave {..} = outcome' 0 units
+  where outcome' rounds units = case step 3 walls units of
+            (units', False) -> (rounds, sum $ map hp $ M.elems units')
+            (units', True) -> outcome' (rounds + 1) units'
+
+outcomeWith :: Cave -> Int -> Maybe (Int, Int)
+outcomeWith Cave {..} i = outcome' 0 units
+  where outcome' rounds units' = case step i walls units' of
+            (units'', False) -> fromBool (allAlive units'') (rounds, sum $ map hp $ M.elems units'')
+            (units'', True) -> outcome' (rounds + 1) units''
+        countElves = M.size . M.filter ((== Elf) . species)
+        allAlive = (== countElves units) . countElves
+    
+day15 = uncurry (*) . outcome
+day15bis cave = uncurry (*) . head . mapMaybe (outcomeWith cave) $ [4..]
 
 
 -- Day 16
@@ -623,75 +702,9 @@ day16bis (tests, prgm) = head $ foldl ops [0, 0, 0, 0] prgm
 
 -- Day 17
 
--- flow' :: Grid -> Grid
--- flow' grid = snd $ runState (runContT (fill (500, minY-1)) return) grid -- runCont (runStateT (fill (500, minY-1)) grid) id
---   where 
---     ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
--- 
---     set :: Pt -> Char -> Flow ()
---     set pos c = modify (M.insert pos c)
--- 
---     left, right, down :: Dir
---     left = first (subtract 1)
---     right = first (+1)
---     down = second (+1)
--- 
---     test :: Pt -> Flow Bool
---     test (x, y) = do
---         traceM . show $ (x, y)
---         if y > maxY || x > maxX+10 || x < minX-10
---         then return False
---         else do 
---             grid <- get
---             --traceM "test"
---             --traceM (showRocks grid)
---             case M.lookup (x, y) grid of
---                  Just '#' -> return True 
---                  Just '~' -> return True
---                  Just '|' -> return False
---                  _ -> action
--- 
---     fill :: Pt -> Flow Bool
---     fill pt = do
---         let pos = move down pt
---         test pos $ do
---             set pos '|'
---             fullDown <- fill pos
---             if not fullDown 
---             then return False
---             else do
---                 fullLeft <- check left pos
---                 fullRight <- check right pos
---                 if not (fullLeft && fullRight)
---                 then return False
---                 else do
---                     set pos '~'
---                     still left pos
---                     still right pos
---                     return True
--- 
---     move :: Dir -> (Pt -> a) -> Pt -> a
---     move dir f = f . dir
--- 
--- 
---     still dir = move dir $ \pos -> do
---         stop <- test pos (return False)
---         unless stop $ do
---             set pos '~'
---             still dir pos
--- 
---     check dir = move dir $ \pos -> do
---         test pos $ do
---             set pos '|'
---             fullDown <- fill pos
---             if not fullDown
---             then return False
---             else check dir pos
-
 -- | Binary operators to chain monads on Booleans
--- | These operators are fail-fast, and 
+-- | These operators are fail-fast (except <&&>)
 infixl 1 <&&>, ||>, &&>
-
 (&&>), (||>), (<&&>) :: (Monad m) => m Bool -> m Bool -> m Bool
 a  &&> b = a >>= bool (return False) b
 a  ||> b = a >>= bool b (return True)
@@ -718,7 +731,7 @@ type Flow = ReaderT Pt (State Grid) Bool
 type Dir = Pt -> Pt
 
 flow :: Grid -> Grid
-flow grid = flip execState grid . flip runReaderT (500, minY) $ fill
+flow grid = execState (runReaderT fillDown (500, minY)) grid
   where 
     ((minX, maxX), (minY, maxY)) = bounds $ M.toList grid
     (left, right, down) = (first (subtract 1), first (+1), second (+1))
@@ -741,20 +754,18 @@ flow grid = flip execState grid . flip runReaderT (500, minY) $ fill
     -- Nice wording ;-)
     onOverflow = (&&>)
 
-    fill :: Flow
-    fill = set '|' >> go down (fill
-             `onOverflow` (testStill left <&&> testStill right)
+    fillDown :: Flow
+    fillDown = set '|' >> go down (fillDown
+             `onOverflow` (fill left <&&> fill right)
              `onOverflow` (markStill left <&&> markStill right))
 
-    testStill, markStill :: Dir -> Flow
-    -- We need to test further left (resp. right) if the tile below us is filled
-    testStill dir = go dir $ fill `onOverflow` testStill dir
+    -- We need to fill further left (resp. right) if the tile below us overflows 
+    fill dir = go dir $ fillDown `onOverflow` fill dir
 
     -- Fill with still water until we reach an already filled tile. 
     markStill dir = set '~' >> local dir (isFilled ||> markStill dir) where
         -- cell cannot be free, arg is irrelevant.
         isFilled = onFree undefined
-
 
 
 day17 = length . filter (/= '#') . M.elems
@@ -827,16 +838,92 @@ day19bis = exec 1
 
 -- Day 20
 
-day20parser = parseLines int
-day20 = const "Not implemented"
-day20bis = const "Not implemented"
+data Regex = Chain [Regex] | Alt [Regex] | Exact Char deriving (Show, Eq)
+
+day20parser :: Parser Regex
+day20parser = char '^' *> regex <* string "$\n"
+  where
+    regex = Chain <$> many (text <|> choice)
+    choice = Alt <$> ((char '(') *> (sepBy1 regex (char '|')) <* (char ')'))
+    text = Exact <$> oneOf "NSWE"
+
+type Adjacencies = M.Map Pt (S.Set Pt)
+
+walk :: Regex -> Adjacencies
+walk = fst . go (M.empty, S.singleton (0, 0))
+  where
+    go (adj, pos) (Chain rs) = foldl go (adj, pos) rs
+    go (adj, pos) (Alt rs) = (M.unionsWith S.union *** S.unions) $ unzip $ map (go (adj, pos)) rs
+    go (adj, pos) (Exact c) = (adj', pos')
+      where 
+        pos' = S.map (move c) pos
+        adj' = S.foldl insertBoth adj pos
+        insertAdj p p' = M.insertWith S.union p (S.singleton p')
+        insertBoth adj p = insertAdj p p' $ insertAdj p' p $ adj 
+          where p' = move c p
+
+    move 'N' = second $ subtract 1
+    move 'S' = second $ (+1)
+    move 'W' = first $ subtract 1
+    move 'E' = first $ (+1)
+
+dijkstra :: Int -> Adjacencies -> (Int, S.Set Pt)
+dijkstra n adjMap = go 0 S.empty $ S.singleton (0, 0)
+  where
+    go s visited q
+        | s == n || S.null q = (s, visited)
+        | otherwise = go (s+1) visited' q'
+        where 
+          visited' = S.union visited q
+          q' = S.unions ((adjMap M.!) <$> S.toList q) S.\\ visited'
+
+
+farthest = subtract 1 . fst . dijkstra (-1)
+roomsWithin n = snd . dijkstra n
+
+day20 = farthest . walk
+day20bis = uncurry subtract . (S.size . roomsWithin 1000 &&& M.size) . walk
+
+-- debug
+
+printBuilding :: Adjacencies -> String
+printBuilding adj = unlines [ [ c i j
+                              | i <- [inc (2*minX) .. inc (2*maxX)] ]
+                            | j <- [inc (2*minY) .. inc (2*maxX)] ]
+  where
+    ((minX, maxX), (minY, maxY)) = bounds (M.toList adj)
+    inc x = if x > 0 then x + 1 else x - 1
+    c i j | i == 0 && j == 0 = 'X' -- start
+          | even i && even j = if p' `M.member` adj then '.' else '#' -- room
+          | i `quot` 2 < minX || i `quot` 2 > maxX = '#' -- border x
+          | j `quot` 2 < minY || j `quot` 2 > maxY = '#' -- border y
+          | even i && odd  j && p `S.member` (adj M.! p') = '-' -- door
+          | odd  i && even j && p `S.member` (adj M.! p') = '|' -- door
+          | otherwise = '#'
+          where
+            even v = v `mod` 2 == 0
+            odd v = v `mod` 2 == 1
+            p  = ((inc i) `quot` 2, (inc j) `quot` 2)
+            p' = (i `quot` 2, j `quot` 2)
 
 
 -- Day 21
 
-day21parser = parseLines int
-day21 = const "Not implemented"
-day21bis = const "Not implemented"
+hash :: Int -> Int -> [Int]
+hash b e = if b >= 256 then hash b' e'
+           else e' : hash (e' .|. 65536) 2024736
+  where
+    e' = (.&. 16777215) . (* 65899) . (.&. 16777215) . (+ (b .&. 255)) $ e
+    b' = (b `div` 256)
+
+takeWhileUnique :: Ord a => [a] -> [a]
+takeWhileUnique = go S.empty where
+    go s (x:xs) | x `S.member` s = []
+                | otherwise = x : go (S.insert x s) xs
+
+day21parser = const (hash 65536 2024736) <$> day19parser
+day21 = head
+day21bis = last . takeWhileUnique
 
 
 -- Day 22
