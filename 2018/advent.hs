@@ -15,6 +15,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE PackageImports #-}
 
 import Control.Monad (liftM, liftM2, liftM3, msum, join)
 import Control.Applicative (liftA2)
@@ -24,6 +25,7 @@ import Data.Either (fromLeft, fromRight, partitionEithers)
 import qualified Data.Vector as V
 -- import Data.Vector ( (//), (!), Vector )
 import qualified Data.Set as S
+import           Data.Set (Set(..))
 import Data.Tuple (fst, snd, swap)
 import qualified Data.Matrix as Mat
 import Data.Matrix (Matrix(..), (!))
@@ -45,7 +47,7 @@ import Debug.Trace (traceShowId, traceShow, traceM, trace)
 import Text.Parsec ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
                    , char, string, noneOf, oneOf, lower, upper, letter -- chars 
                    , try, newline, eof, parse, anyToken, optional -- misc
-                   , getPosition
+                   , getPosition, option, manyTill, anyChar
                    )
 import Text.Parsec.Pos (sourceLine, sourceColumn)
 import Text.Parsec.String (Parser, parseFromFile)
@@ -57,6 +59,7 @@ import Control.Exception (catch)
 import System.IO.Error (isDoesNotExistError)
 import Data.Tree (Tree(..), foldTree)
 import System.CPUTime
+import Data.Time.Clock
 import Data.Complex.Generic
 import Data.Foldable (fold, asum)
 import Data.Modular (type (/)(), ℤ, unMod)
@@ -68,7 +71,17 @@ import Control.Monad.Cont
 import Control.Monad.Reader
 import Data.Data
 import Data.Typeable
-
+import Data.Function.ArrayMemoize (arrayMemo, arrayMemoFix)
+import Linear.V2 
+import Linear.V3 
+import Linear.V4 
+import Control.Monad.Zip
+import Z3.Monad (Z3(..), mkInteger, mkFreshIntVar, mkEq, mkLe, mkAdd, mkSub, mkIntNum, mkIte, mkUnaryMinus, assert, evalInt, withModel, evalZ3, mkGt, mkLt, mkAnd, mkNot, mkImplies)
+import Z3.Base (AST(..))
+import Data.Ord (Down(..))
+import Data.UnionFind.ST as UF
+import GHC.ST (runST)
+import Data.SBV hiding ((&&&), fromBool, inRange, shift)
 
 -- infixl 7 % -- modulus has same precedence as (*) or (/)
 -- (%) = mod
@@ -110,14 +123,14 @@ instance Show a => Display a where
 
 day :: (Display b, Display c) => Int -> Parser a -> (a -> b) -> (a -> c) -> IO ()
 day n parser p p' = flip catch ignore $ do
-    start <- getCPUTime
+    start <- getCurrentTime
     input <- getInput (printf "input%02d.txt" n) parser
     let res1 = display $ p input
-    mid <- res1 `seq` getCPUTime
+    mid <- res1 `seq` getCurrentTime
     let res2 = display $ p' input
-    stop <- res2 `seq` getCPUTime 
-    let diff1 = (fromIntegral (mid - start)) / (10^12) :: Double
-    let diff2 = (fromIntegral (stop - mid)) / (10^12) :: Double
+    stop <- res2 `seq` getCurrentTime 
+    let diff1 = (realToFrac $ diffUTCTime mid start) :: Double
+    let diff2 = (realToFrac $ diffUTCTime stop mid) :: Double
     putStrLn $ printf "Day %02d -- %s (%.3f s) -- %s (%.3f s)" n res1 diff1 res2 diff2
   where ignore e | isDoesNotExistError e = return () 
                  | otherwise = putStrLn $ show e
@@ -126,7 +139,8 @@ main = do
     putStrLn "Start ..."
     day 25 day25parser day25 day25bis
     day 24 day24parser day24 day24bis
-    day 23 day23parser day23 day23bis
+    day 23 day23parser day23 (const "Z3")
+    day23bis =<< getInput "input23.txt" day23parser
     day 22 day22parser day22 day22bis
     day 21 day21parser day21 day21bis
     day 20 day20parser day20 day20bis
@@ -928,27 +942,180 @@ day21bis = last . takeWhileUnique
 
 -- Day 22
 
-day22parser = parseLines int
-day22 = const "Not implemented"
-day22bis = const "Not implemented"
+computeCave :: Int -> Pt -> (Pt -> Int, Pt)
+computeCave depth (tx, ty) = ((`mod`3) . calc, (tx, ty))
+  where 
+    calc = arrayMemo ((0,0), (200*tx, 2*ty)) ((`mod` 20183) . (+ depth) . calc')
+    calc' (0, 0) = 0
+    calc' (x, 0) = (x * 16807)
+    calc' (0, y) = (y * 48271)
+    calc' (x, y) | (x, y) == (tx, ty) = 0
+    calc' (x, y) = calc (x-1, y) * calc (x, y-1)
+    shift = join (***) (+1)
+
+speleology :: (Pt -> Int) -> Pt -> Int
+speleology danger target = go 0 S.empty (M.singleton 0 (S.singleton (1, (0, 0))))
+  where
+    go n visited q
+        | (1, target) `S.member` visited' = n
+        | otherwise = go n' visited' q'
+        where
+          visited' = S.union visited visiting
+          ((n', visiting), remaining) = M.deleteFindMin q
+          q' = foldl (flip $ uncurry $ M.insertWith S.union) remaining neighbors
+          neighbors = map (second S.singleton) $ filter (not . (`S.member` visited') . snd) $ concatMap next (S.toList visiting)
+          next a = nextTool a ++ nextPos a
+          nextTool (t, pos) = [ (n'+7, (t', pos)) | t' <- [0..2], t' /= t, t' /= danger pos ]
+          nextPos (t, (x, y)) = [ (n'+1, (t, (x', y'))) | (x', y') <- adj, x' >= 0 && y' >= 0, t /= danger (x', y') ]
+                                where adj = [(x-1, y), (x+1, y), (x, y+1), (x, y-1)]
+
+day22parser = computeCave <$> justInt <* newline <*> ( (,) <$> justInt <*> justInt <* newline)
+day22 (danger, (x, y)) = sum [ danger (x, y) | x <- [0..x], y <- [0..y] ]
+day22bis (danger, target) = 1 + speleology danger target
 
 
 -- Day 23
 
-day23parser = parseLines int
-day23 = const "Not implemented"
-day23bis = const "Not implemented"
+data Robot = Robot { pos :: V3 Int, range :: Int } 
+day23parser = parseLines $ Robot <$> (V3 <$> justInt <*> justInt <*> justInt) <*> justInt
+
+day23 robots = length $ filter (inRangeOf strongest) robots
+  where 
+    strongest = maximumOn range robots
+    manhathan3 = sum .: mzipWith (abs .: subtract)
+    inRangeOf (Robot p r) (Robot p' _) = r >= manhathan3 p p'
+    inRange p r = range r >= manhathan3 p (pos r)
+
+
+problem :: [Robot] -> Goal
+problem robots = do
+    pt <- mapM sInteger (V3 "x" "y" "z")
+    maximize "nInRange" $ sum (map (inRange pt) robots)
+    minimize "distance" $ manhathan3 pt (V3 0 0 0)
+  where
+    manhathan3 :: V3 SInteger -> V3 Int -> SInteger
+    manhathan3 pt pos = foldl1 (+) $ fmap (abs . uncurry subtract) $ mzip pt (fmap lit pos)
+
+    inRange :: V3 SInteger -> Robot -> SInteger
+    inRange pt (Robot pos rad) = reify $ manhathan3 pt pos .<= lit rad
+
+    abs x = ite (x .< 0) (-x) (x)
+    reify b = ite b 1 0
+    lit = literal . fromIntegral
+
+day23bis robots = do
+    start <- getCurrentTime
+    opt <- show <$> optimize Lexicographic (problem robots)
+    stop <- opt `seq` getCurrentTime
+    let diff = (realToFrac $ diffUTCTime stop start) :: Double
+    putStrLn $ printf "Day 23 -- %s (%.3f s)" opt diff
 
 
 -- Day 24
 
-day24parser = parseLines int
-day24 = const "Not implemented"
-day24bis = const "Not implemented"
+data AttackKind = Fire | Bludgeoning | Cold | Radiation | Slashing
+  deriving (Ord, Eq, Bounded, Enum, Data, Typeable, Show)
+data Army = Immune | Infection
+  deriving (Ord, Eq, Bounded, Enum, Data, Typeable, Show)
+
+data Group = Group {
+        nunits :: Int, hps :: Int, 
+        weak :: Set AttackKind, immune :: Set AttackKind,
+        attack :: Int, kind :: AttackKind, initiative :: Int,
+        team :: Army, rank :: Int
+    } deriving (Show, Eq)
+
+day24parser = (++) <$> parseArmy Immune <* newline <*> parseArmy Infection
+  where
+    parseArmy :: Army -> Parser [Group]
+    parseArmy army = zipWith (\i g -> g army i) [1..] <$> (many (noneOf "\n") *> newline *> groups)
+    groups = parseLines group
+    group :: Parser (Army -> Int -> Group)
+    group = do                           -- Example:
+        units <- untilNat                   -- "1432"
+        hp <- untilNat                      -- " units each with 7061"
+        string " hit points "               -- " hit points "
+        optional (char '(')                 -- "("
+        weak1 <- modifiers "weak to "       -- ""
+        immune <- modifiers "immune to "    -- "immune to cold; "
+        weak2 <- modifiers "weak to "       -- "weak to bludgeoning)"
+        -- hack, hack, hack...
+        let weak = S.union weak1 weak2
+        attack <- untilNat                  -- " with an attack that does 41"
+        kind <- char ' ' *> attackKind      -- " slashing"
+        initiative <- untilNat              -- " damage at initiative 17"
+        return $ Group units hp weak immune attack kind initiative 
+    modifiers :: String -> Parser (Set AttackKind)
+    modifiers name = option S.empty $ try $ string name *> attackKinds <* (string ")" <|> string "; ")
+    attackKinds :: Parser (Set AttackKind)
+    attackKinds = S.fromList <$> attackKind `sepBy1` string ", "
+    attackKind :: Parser AttackKind
+    attackKind = asum $ map (try . parseRepr) [Fire ..]
+    parseRepr :: Data a => a -> Parser a
+    parseRepr i = const i <$> string (map toLower . show . toConstr $ i)
+    untilNat :: Parser Int
+    untilNat = try $ many (noneOf "0123456789\n") *> nat
+
+fight boost groups 
+  | groups == groups' = groups
+  | otherwise = fight boost groups'
+  where
+    groups' = filter ((> 0) . nunits) . doAttack . selectTargets $ groups
+
+    effectivePower (Group {team = Immune, ..}) = nunits * (attack + boost)
+    effectivePower (Group {..})                = nunits * attack
+
+    dammage a b 
+        | team a == team b = 0           -- same team, no attack.
+        | kind a `S.member` immune b = 0
+        | kind a `S.member` weak b = 2 * effectivePower a
+        | otherwise = effectivePower a
+
+    selectTargets = fst . foldl' selectTarget ([], groups) . sortOn selectOrder
+      where
+        selectOrder = Down . (effectivePower &&& initiative)
+        selectTarget (attacks, defenders) attacker = ((attacker, target):attacks, remainers)
+          where
+            target = listToMaybe . sortOn targetOrder . filter ((> 0) . dammage attacker) $ defenders
+            targetOrder = Down . (dammage attacker &&& effectivePower &&& initiative)
+            remainers = maybe id (filter . (/=)) target $ defenders
+
+    doAttack = M.elems . foldl' attack initialTeams . sortOn attackOrder
+      where
+        attackOrder = Down . initiative . fst
+        initialTeams = M.fromList $ adjoinFst initiative groups
+        attack teams (a, Nothing) = teams
+        attack teams (a, Just d) = M.insert (initiative d') d' teams
+          where realA = teams M.! initiative a
+                realD = teams M.! initiative d
+                d' = realD {nunits = max 0 $ (nunits realD) - (dammage realA realD `div` hps realD) }
+
+day24 = sum . map nunits . fight 0
+day24bis = sum . map nunits . head . dropWhile (not . win) . zipWith fight [1..] . repeat
+  where win = all ((Immune ==) . team)
 
 
 -- Day 25
 
-day25parser = parseLines int
-day25 = const "Not implemented"
-day25bis = const "Not implemented"
+day25parser :: Parser [V4 Int]
+day25parser = parseLines (V4 <$> justInt <*> justInt <*> justInt <*> justInt)
+  where 
+    justInt = skip *> int <* skip 
+    skip = many (noneOf "+-0123456789\n")
+
+(.:) :: (x -> y) -> (a -> b -> x) -> (a -> b -> y)
+(.:) = (.) . (.)
+
+manhathan4 :: (MonadZip m, Foldable m, Num a) => m a -> m a -> a
+manhathan4 = sum .: mzipWith (abs .: subtract)
+
+day25 points = runST $ do 
+    ps <- zip points <$> mapM UF.fresh points
+    flip mapM ps $ \(a, pa) -> do
+        flip mapM ps $ \(b, pb) -> do
+            when (manhathan4 a b <= 3) $ UF.union pa pb
+    redundant <- mapM (UF.redundant . snd) ps
+    return $ length (filter not redundant)
+
+day25bis = const "Finished"
+

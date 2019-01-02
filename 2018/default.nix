@@ -25,6 +25,11 @@ let
     hashmap
     array
     mtl
+    array-memoize
+    linear
+    z3
+    sbv
+    union-find
   ]);
 
 in stdenv.mkDerivation {
