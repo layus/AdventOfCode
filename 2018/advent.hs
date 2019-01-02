@@ -76,8 +76,6 @@ import Linear.V2
 import Linear.V3 
 import Linear.V4 
 import Control.Monad.Zip
-import Z3.Monad (Z3(..), mkInteger, mkFreshIntVar, mkEq, mkLe, mkAdd, mkSub, mkIntNum, mkIte, mkUnaryMinus, assert, evalInt, withModel, evalZ3, mkGt, mkLt, mkAnd, mkNot, mkImplies)
-import Z3.Base (AST(..))
 import Data.Ord (Down(..))
 import Data.UnionFind.ST as UF
 import GHC.ST (runST)

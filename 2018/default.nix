@@ -1,6 +1,5 @@
 let 
   haskellPackageOverrides = self: super: {
-    # Glob = self.callPackage ./Glob-0.7.14.nix {};
     modular-arithmetic = pkgs.haskell.lib.dontCheck super.modular-arithmetic ;
   };
 
@@ -12,8 +11,6 @@ let
     HTTP
     Unique
     ListZipper
-    #modular-arithmetic
-    #hit-graph
     matrix
     lens
     parsec3-numbers
@@ -27,7 +24,6 @@ let
     mtl
     array-memoize
     linear
-    z3
     sbv
     union-find
   ]);
