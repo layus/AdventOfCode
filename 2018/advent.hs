@@ -26,48 +26,46 @@ import qualified Data.UnionFind.ST  as UF
 
 import Data.List        hiding (count)
 import Data.Maybe
-import Linear.V2
 import Linear.V3
 import Linear.V4
 
-import Control.Applicative          (liftA2)
-import Control.Arrow                ((&&&), (***), first, second, (>>>), )
+-- import Control.Applicative          (liftA2)
+import Control.Arrow                ((&&&), (***), first, second, )
 import Control.Exception            (catch)
-import Control.Lens                 ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~), runIdentity)
-import Control.Monad                (liftM, liftM2, liftM3, msum, join, when)
+import Control.Lens                 ((^?), ix, (&), _1, (^.), (.~))
+import Control.Monad                (liftM2, msum, join, when)
 import Control.Monad.Reader         (ReaderT, runReaderT, local, ask)
 import Control.Monad.State.Strict   (State, execState, modify, get)
 import Control.Monad.Zip            (MonadZip, mzip, mzipWith)
 import Data.Bits                    ((.|.), (.&.))
 import Data.Bool                    (bool)
-import Data.Char                    (digitToInt, ord, isUpper, isLower, chr, toLower)
+import Data.Char                    (ord, isUpper, isLower, toLower)
 import Data.Complex.Generic         (Complex((:+)), )
 import Data.Data                    (Data, toConstr)
-import Data.Either                  (fromLeft, fromRight, partitionEithers)
+import Data.Either                  (partitionEithers)
 import Data.Foldable                (fold, asum)
 import Data.Function                (on)
 import Data.Function.ArrayMemoize   (arrayMemo)
-import Data.List.Unique             (unique, allUnique, sortUniq, repeated, repeatedBy, occurrences, count_)
+import Data.List.Unique             (repeated, repeatedBy, count_)
 import Data.Map.Strict              (Map)
 import Data.Matrix                  (Matrix, (!))
 import Data.Modular                 (type (/)(), ℤ)
 import Data.Ord                     (Down(Down))
 import Data.SBV                     (Goal, SInteger, OptimizeStyle(Lexicographic), )
 import Data.SBV                     (optimize, maximize, minimize, literal, sInteger, ite, (.<=), (.<), )
-import Data.Sequence                ((<|), (|>), Seq((:<|), (:|>)), fromList, (!?))
+import Data.Sequence                ((<|), (|>), Seq((:<|), (:|>)))
 import Data.Set                     (Set)
 import Data.String                  (unlines)
 import Data.Time.Clock              (getCurrentTime, diffUTCTime)
 import Data.Tree                    (Tree(Node), foldTree)
 import Data.Tuple                   (fst, snd, swap)
 import Data.Typeable                (Typeable)
-import Debug.Trace                  (traceShowId, traceShow, traceM, trace)
+-- import Debug.Trace                  (traceShowId, traceShow, traceM, trace)
 import GHC.ST                       (runST)
 import System.IO.Error              (isDoesNotExistError)
-import Text.Parsec                  ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
-                                    , char, string, noneOf, oneOf, lower, upper, letter -- chars 
-                                    , try, newline, eof, parse, anyToken, optional -- misc
-                                    , getPosition, option, manyTill, anyChar
+import Text.Parsec                  ( many, many1, sepBy1, count, (<|>) -- repeats
+                                    , char, string, noneOf, oneOf, lower, upper, letter, newline -- chars 
+                                    , try, eof, optional, option, getPosition -- misc
                                     )
 import Text.Parsec.Pos              (sourceLine, sourceColumn)
 import Text.Parsec.String           (Parser, parseFromFile)
