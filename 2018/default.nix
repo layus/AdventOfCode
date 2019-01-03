@@ -8,28 +8,26 @@ let
   inherit (nixpkgs) pkgs stdenv lib;
 
   ghc = pkgs.haskellPackages.ghcWithPackages (ps: with ps; [
-    HTTP
-    Unique
     ListZipper
-    matrix
-    lens
-    parsec3-numbers
-    vector-space
-    linear
-    modular-arithmetic
-    numeric-prelude
+    Unique
+    array
+    array-memoize
     complex-generic
     hashmap
-    array
-    mtl
-    array-memoize
+    lens
     linear
+    matrix
+    modular-arithmetic
+    mtl
+    numeric-prelude
+    parsec3-numbers
     sbv
     union-find
+    vector-space
   ]);
 
 in stdenv.mkDerivation {
-  name = "adventOfCode2017";
+  name = "adventOfCode2018";
   src = ./advent.hs;
 
   buildInputs =  [ ghc ];
