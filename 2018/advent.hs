@@ -17,69 +17,62 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PackageImports #-}
 
-import Control.Monad (liftM, liftM2, liftM3, msum, join)
-import Control.Applicative (liftA2)
-import Control.Arrow ((&&&), (***), first, second, (>>>), Kleisli(..))
-import Control.Lens ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~), runIdentity)
-import Data.Either (fromLeft, fromRight, partitionEithers)
-import qualified Data.Vector as V
--- import Data.Vector ( (//), (!), Vector )
-import qualified Data.Set as S
-import           Data.Set (Set(..))
-import Data.Tuple (fst, snd, swap)
-import qualified Data.Matrix as Mat
-import Data.Matrix (Matrix(..), (!))
-import Data.String (unlines)
-import Data.Char (digitToInt, ord, isUpper, isLower, chr, toLower)
--- import Data.HashMap (alter, Map, findWithDefault, empty, elems)
--- import qualified Data.HashMap as HM
-import Data.List hiding (count)
-import Data.List.Unique (unique, allUnique, sortUniq, repeated, repeatedBy, occurrences, count_)
-import Data.List.Zipper hiding (empty)
-import Data.Sequence ((<|), (|>), Seq(..), fromList, (!?))
-import qualified Data.Sequence as Seq
--- import Data.List.Split (chunksOf)
-import qualified Data.Map.Strict as M
 import qualified Data.IntMap.Strict as IM
+import qualified Data.Map.Strict    as M
+import qualified Data.Matrix        as Mat
+import qualified Data.Sequence      as Seq
+import qualified Data.Set           as S
+import qualified Data.UnionFind.ST  as UF
+
+import Data.List        hiding (count)
 import Data.Maybe
-import Data.Monoid (Sum, getSum)
-import Debug.Trace (traceShowId, traceShow, traceM, trace)
-import Text.Parsec ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
-                   , char, string, noneOf, oneOf, lower, upper, letter -- chars 
-                   , try, newline, eof, parse, anyToken, optional -- misc
-                   , getPosition, option, manyTill, anyChar
-                   )
-import Text.Parsec.Pos (sourceLine, sourceColumn)
-import Text.Parsec.String (Parser, parseFromFile)
-import Text.Parsec.Number (int, nat)
-import qualified Text.Parsec.Error
-import Text.Printf (printf)
-import Data.Function (on)
-import Control.Exception (catch)
-import System.IO.Error (isDoesNotExistError)
-import Data.Tree (Tree(..), foldTree)
-import System.CPUTime
-import Data.Time.Clock
-import Data.Complex.Generic
-import Data.Foldable (fold, asum)
-import Data.Modular (type (/)(), ℤ, unMod)
-import Data.Bits ((.|.), (.&.))
--- import Data.Bits (xor)
-import Data.Bool (bool)
-import Control.Monad.State.Strict
-import Control.Monad.Cont
-import Control.Monad.Reader
-import Data.Data
-import Data.Typeable
-import Data.Function.ArrayMemoize (arrayMemo, arrayMemoFix)
-import Linear.V2 
-import Linear.V3 
-import Linear.V4 
-import Control.Monad.Zip
-import Data.Ord (Down(..))
-import Data.UnionFind.ST as UF
-import GHC.ST (runST)
-import Data.SBV hiding ((&&&), fromBool, inRange, shift)
+import Linear.V2
+import Linear.V3
+import Linear.V4
+
+import Control.Applicative          (liftA2)
+import Control.Arrow                ((&&&), (***), first, second, (>>>), Kleisli(..))
+import Control.Exception            (catch)
+import Control.Lens                 ((^?), element, ix, preview, (+~), (&), _1, _2, _3, (^.), (.~), runIdentity)
+import Control.Monad                (liftM, liftM2, liftM3, msum, join, when)
+import Control.Monad.Reader         (ReaderT, runReaderT, local, ask)
+import Control.Monad.State.Strict   (State, execState, modify, get)
+import Control.Monad.Zip            (MonadZip, mzip, mzipWith)
+import Data.Bits                    ((.|.), (.&.))
+import Data.Bool                    (bool)
+import Data.Char                    (digitToInt, ord, isUpper, isLower, chr, toLower)
+import Data.Complex.Generic         (Complex((:+)), )
+import Data.Data                    (Data, toConstr)
+import Data.Either                  (fromLeft, fromRight, partitionEithers)
+import Data.Foldable                (fold, asum)
+import Data.Function                (on)
+import Data.Function.ArrayMemoize   (arrayMemo)
+import Data.List.Unique             (unique, allUnique, sortUniq, repeated, repeatedBy, occurrences, count_)
+import Data.Map.Strict              (Map)
+import Data.Matrix                  (Matrix, (!))
+import Data.Modular                 (type (/)(), ℤ)
+import Data.Ord                     (Down(..))
+import Data.SBV                     (Goal, SInteger, OptimizeStyle(Lexicographic), )
+import Data.SBV                     (optimize, maximize, minimize, literal, sInteger, ite, (.<=), (.<), )
+import Data.Sequence                ((<|), (|>), Seq((:<|), (:|>)), fromList, (!?))
+import Data.Set                     (Set)
+import Data.String                  (unlines)
+import Data.Time.Clock              (getCurrentTime, diffUTCTime)
+import Data.Tree                    (Tree(..), foldTree)
+import Data.Tuple                   (fst, snd, swap)
+import Data.Typeable                (Typeable)
+import Debug.Trace                  (traceShowId, traceShow, traceM, trace)
+import GHC.ST                       (runST)
+import System.IO.Error              (isDoesNotExistError)
+import Text.Parsec                  ( many, many1, sepBy, sepBy1, count, (<|>) -- repeats
+                                    , char, string, noneOf, oneOf, lower, upper, letter -- chars 
+                                    , try, newline, eof, parse, anyToken, optional -- misc
+                                    , getPosition, option, manyTill, anyChar
+                                    )
+import Text.Parsec.Pos              (sourceLine, sourceColumn)
+import Text.Parsec.String           (Parser, parseFromFile)
+import Text.Parsec.Number           (int, nat)
+import Text.Printf                  (printf)
 
 -- infixl 7 % -- modulus has same precedence as (*) or (/)
 -- (%) = mod
@@ -567,7 +560,7 @@ day14bis n = 20283721 -- (too slow!) -- length $ takeWhile (not . (xs `isPrefixO
 
 -- Heavily inspired / copied from 'https://github.com/ephemient/aoc2018/blob/master/src/Day15.hs'
 
-data Cave = Cave {walls :: S.Set Pt, units :: M.Map Pt Unit} deriving (Show)
+data Cave = Cave {walls :: Set Pt, units :: Map Pt Unit} deriving (Show)
 data Species = Goblin | Elf deriving (Show, Ord, Eq)
 data Unit = Unit { species :: Species, hp :: Int } deriving (Show)
 
@@ -582,10 +575,10 @@ day15parser = uncurry Cave . (S.fromDistinctAscList *** M.fromDistinctAscList) .
                           'E' -> Right (pos, Unit Elf 200)
                           'G' -> Right (pos, Unit Goblin 200)
 
-adjacencies :: Pt -> S.Set Pt
+adjacencies :: Pt -> Set Pt
 adjacencies (y, x) = S.fromDistinctAscList [(y - 1, x), (y, x - 1), (y, x + 1), (y + 1, x)]
 
-nearest :: S.Set Pt -> S.Set Pt -> Pt -> Maybe Pt
+nearest :: Set Pt -> Set Pt -> Pt -> Maybe Pt
 nearest walls goals = go walls . S.singleton
   where
     go visited q 
@@ -594,7 +587,7 @@ nearest walls goals = go walls . S.singleton
         | otherwise = go visited' $ S.unions (adjacencies <$> S.toList q) S.\\ visited'
         where visited' = S.union visited q
 
-step :: Int -> S.Set Pt -> M.Map Pt Unit -> (M.Map Pt Unit, Bool)
+step :: Int -> Set Pt -> Map Pt Unit -> (Map Pt Unit, Bool)
 step force walls = go M.empty
   where
     go past (M.minViewWithKey -> Just ((pos, unit), future))
@@ -722,7 +715,7 @@ a  &&> b = a >>= bool (return False) b
 a  ||> b = a >>= bool b (return True)
 a <&&> b = liftM2 (&&) a b
 
-type Grid = M.Map Pt Char
+type Grid = Map Pt Char
 
 day17parser :: Parser Grid
 day17parser = flow . M.fromList . map (,'#') . concat <$> parseLines line where 
@@ -823,6 +816,9 @@ day18bis = evalForest . fixLoop collectWood 1000000000
 
 -- Day 19
 
+parseRepr :: Data a => a -> Parser a
+parseRepr i = const i <$> string (map toLower . show . toConstr $ i)
+
 data Program = Program Int (Seq Instr')
 data Instr' = Instr' Op Int Int Int 
 
@@ -831,8 +827,6 @@ day19parser = Program <$> bind <*> (Seq.fromList <$> parseLines instr)
     bind = string "#ip " *> justNat <* newline
     instr = Instr' <$> opcode <*> justNat <*> justNat <*> justNat
     opcode = asum $ map (try . parseRepr) [Addr ..]
-    parseRepr :: Show a => a -> Parser a
-    parseRepr i = const i <$> string (show i)
 
 apply' :: Instr' -> Registers -> Registers
 apply' (Instr' op a b to) = apply op (Instr 0 a b to)
@@ -859,7 +853,7 @@ day20parser = char '^' *> regex <* string "$\n"
     choice = Alt <$> ((char '(') *> (sepBy1 regex (char '|')) <* (char ')'))
     text = Exact <$> oneOf "NSWE"
 
-type Adjacencies = M.Map Pt (S.Set Pt)
+type Adjacencies = Map Pt (Set Pt)
 
 walk :: Regex -> Adjacencies
 walk = fst . go (M.empty, S.singleton (0, 0))
@@ -879,7 +873,7 @@ walk = fst . go (M.empty, S.singleton (0, 0))
     move 'W' = first $ subtract 1
     move 'E' = first $ (+1)
 
-dijkstra :: Int -> Adjacencies -> (Int, S.Set Pt)
+dijkstra :: Int -> Adjacencies -> (Int, Set Pt)
 dijkstra n adjMap = go 0 S.empty $ S.singleton (0, 0)
   where
     go s visited q
@@ -1049,10 +1043,6 @@ day24parser = (++) <$> parseArmy Immune <* newline <*> parseArmy Infection
     attackKinds = S.fromList <$> attackKind `sepBy1` string ", "
     attackKind :: Parser AttackKind
     attackKind = asum $ map (try . parseRepr) [Fire ..]
-    parseRepr :: Data a => a -> Parser a
-    parseRepr i = const i <$> string (map toLower . show . toConstr $ i)
-    untilNat :: Parser Int
-    untilNat = try $ many (noneOf "0123456789\n") *> nat
 
 fight boost groups 
   | groups == groups' = groups
